@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract SothebysAuction is AccessControl, ReentrancyGuard {
+    using SafeMath for uint256;
+
+    bytes32 public constant AUCTIONEER_ROLE = keccak256("AUCTIONEER_ROLE");
+    bytes32 public constant BIDDER_ROLE = keccak256("BIDDER_ROLE");
+
+    struct AuctionItem {
+        string description;
+        uint256 startPrice;
+        uint256 currentBid;
+        address highestBidder;
+        bool isShippingRequired;
+        uint256 shippingCost;
+        bool isFinalized;
+    }
+
+    AuctionItem[] public items;
+
+    event ItemListed(uint256 indexed itemId, string description, uint256 startPrice, bool isShippingRequired, uint256 shippingCost);
+    event NewBid(uint256 indexed itemId, address indexed bidder, uint256 amount);
+    event AuctionFinalized(uint256 indexed itemId, address indexed winner, uint256 finalAmount);
+
+    constructor() {
+        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender); // Admin can grant and revoke roles
+    }
+
+    function listItem(string memory _description, uint256 _startPrice, bool _isShippingRequired, uint256 _shippingCost) public {
+        require(hasRole(AUCTIONEER_ROLE, msg.sender), "Caller is not an auctioneer");
+
+        AuctionItem memory newItem = AuctionItem({
+            description: _description,
+            startPrice: _startPrice,
+            currentBid: 0,
+            highestBidder: address(0),
+            isShippingRequired: _isShippingRequired,
+            shippingCost: _shippingCost,
+            isFinalized: false
+        });
+
+        items.push(newItem);
+
+        emit ItemListed(items.length - 1, _description, _startPrice, _isShippingRequired, _shippingCost);
+    }
+
+    function placeBid(uint256 _itemId) public payable nonReentrant {
+        require(hasRole(BIDDER_ROLE, msg.sender), "Caller is not a bidder");
+        require(_itemId < items.length, "Invalid item ID");
+        require(!items[_itemId].isFinalized, "Auction is already finalized");
+        require(msg.value >= items[_itemId].startPrice, "Bid must be at least the starting price");
+        require(msg.value > items[_itemId].currentBid, "Bid must be higher than the current bid");
+
+        // Refund the previous highest bidder
+        if (items[_itemId].highestBidder != address(0)) {
+            payable(items[_itemId].highestBidder).transfer(items[_itemId].currentBid);
+        }
+
+        // Update auction state
+        items[_itemId].currentBid = msg.value;
+        items[_itemId].highestBidder = msg.sender;
+
+        emit NewBid(_itemId, msg.sender, msg.value);
+    }
+
+    function finalizeAuction(uint256 _itemId) public {
+        require(hasRole(AUCTIONEER_ROLE, msg.sender), "Caller is not an auctioneer");
+        require(_itemId < items.length, "Invalid item ID");
+        require(!items[_itemId].isFinalized, "Auction is already finalized");
+
+        items[_itemId].isFinalized = true;
+
+        uint256 finalAmount = items[_itemId].currentBid;
+        if (items[_itemId].isShippingRequired) {
+            finalAmount = finalAmount.add(items[_itemId].shippingCost);
+        }
+
+        // Transfer the final amount to the auctioneer
+        payable(msg.sender).transfer(finalAmount);
+
+        emit AuctionFinalized(_itemId, items[_itemId].highestBidder, finalAmount);
+    }
+
+    function getAuctionItemCount() public view returns (uint256) {
+        return items.length;
+    }
+
+    function getAuctionItem(uint256 _itemId) public view returns (string memory, uint256, uint256, address, bool, uint256, bool) {
+        require(_itemId < items.length, "Invalid item ID");
+
+        AuctionItem memory item = items[_itemId];
+        return (
+            item.description,
+            item.startPrice,
+            item.currentBid,
+            item.highestBidder,
+            item.isShippingRequired,
+            item.shippingCost,
+            item.isFinalized
+        );
+    }
+}
